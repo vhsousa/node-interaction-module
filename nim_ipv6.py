@@ -15,20 +15,23 @@ class NodeInteractionModule:
     num_nodes = 3
     __socket = None
     locked = True
+    __max_retries = 5
+    __retries = 0
+    mailer = None
+    responsible = ''
 
-    def __init__(self, ip, port, mode, num_nodes=-1, sampling_time=-1):
+    def __init__(self, ip, port, mode, num_nodes=-1, sampling_time=-1, max_retries=5):
         try:
             global failed
             failed = 0
             self.__connection_data = {'ip': ip, 'port': port}
             self.locked = True
-            print self.__connection_data['ip']
-            print self.__connection_data['port']
+            # print self.__connection_data['ip']
+            #print self.__connection_data['port']
 
             self.__socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.__socket.connect((self.__connection_data['ip'], int(self.__connection_data['port'])))
             self.__socket.settimeout(2)
-
             if mode == 'auto':
                 # TODO: Implement the auto discover settings
                 print 'Must discover nodes and Ts'
@@ -40,10 +43,16 @@ class NodeInteractionModule:
                 for i in range(1, self.num_nodes + 1):
                     self.__startSampling(i)
 
+            self.__max_retries = max_retries
+            self.__retries = 0
         except Exception, e:
-            print '[Error] at init'
-            print traceback.format_exc()
-            sys.exit(0)
+            print 'Reconnecting...'
+            self.__retries += 1
+            if self.__retries == max_retries and self.mailer is not None:
+                self.mailer.send_mail(self.responsible, '[Network IPv6] Connection Problem', 'Hello Admin,\n\n The connection to the WSN has reached a maximum of '+str(self.__retries)+'. Please check with is wrong.\n\nIP: '+str(ip)+'\nPORT: '+port+'\n\n Thanks')
+            time.sleep(5)
+            self.__init__(ip, port, mode, num_nodes, sampling_time, self.__max_retries)
+
 
     def closeup(self):
         self.locked = False
@@ -90,11 +99,17 @@ class NodeInteractionModule:
                     if tryout > nodeId + 1:
                         tryout = 0
                         print 'Lost connection to dispatcher'
+                        self.__init__(self.__connection_data['ip'], self.__connection_data['port'], 'static',
+                                      self.num_nodes,
+                                      self.samplingTime,
+                                      self.__max_retries)
+                        time.sleep(5)
+
 
             except Exception, e:
                 print '[Error] Fetching data: ' + str(e)
                 self.__init__(self.__connection_data['ip'], self.__connection_data['port'], 'static', self.num_nodes,
-                              self.samplingTime)
+                              self.samplingTime, self.__max_retries)
                 continue
 
         return result
@@ -107,6 +122,7 @@ class NodeInteractionModule:
         print 'Rebooting Node ' + str(self.__idConverterLogical(id))
         self.__socket.send(array.array('B', [102, self.__idConverterLogical(id), 0, 16, 0]).tostring())
         time.sleep(2)
+        self.__socket.send(array.array('B', [102, self.__idConverterLogical(id), 0, 16, 0]).tostring())
 
     def __stopSampling(self, id):
         print 'Stopping Sampling Agent Node ' + str(self.__idConverterLogical(id))
@@ -157,7 +173,7 @@ class NodeInteractionModule:
 
                 mis = mis[mis[2] + 16:]
         except Exception, e:
-            print 'Exception processing element! '+str(e)
+            print 'Exception processing element! ' + str(e)
             print traceback.print_exc()
             pass
 
