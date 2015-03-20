@@ -1,6 +1,7 @@
 import socket
 import traceback
 import sys
+# -*- coding: utf-8 -*-
 import array
 import time
 import datetime
@@ -11,14 +12,15 @@ __author__ = 'vhsousa'
 
 class NodeInteractionModule:
     __connection_data = {}
-    samplingTime = 1
+    sampling_time = 1
     num_nodes = 3
-    __socket = None
-    locked = True
-    __max_retries = 5
-    __retries = 0
     mailer = None
     responsible = ''
+    locked = True
+    __socket = None
+    __max_retries = 5
+    __retries = 0
+
 
     def __init__(self, ip, port, mode, num_nodes=-1, sampling_time=-1, max_retries=5):
         try:
@@ -27,7 +29,7 @@ class NodeInteractionModule:
             self.__connection_data = {'ip': ip, 'port': port}
             self.locked = True
             # print self.__connection_data['ip']
-            #print self.__connection_data['port']
+            # print self.__connection_data['port']
 
             self.__socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.__socket.connect((self.__connection_data['ip'], int(self.__connection_data['port'])))
@@ -47,9 +49,13 @@ class NodeInteractionModule:
             self.__retries = 0
         except Exception, e:
             print 'Reconnecting...'
+            print traceback.print_exc()
             self.__retries += 1
             if self.__retries == max_retries and self.mailer is not None:
-                self.mailer.send_mail(self.responsible, '[Network IPv6] Connection Problem', 'Hello Admin,\n\n The connection to the WSN has reached a maximum of '+str(self.__retries)+'. Please check with is wrong.\n\nIP: '+str(ip)+'\nPORT: '+port+'\n\n Thanks')
+                self.mailer.send_mail(self.responsible, '[Network IPv6] Connection Problem',
+                                      'Hello Admin,\n\n The connection to the WSN has reached a maximum of ' + str(
+                                          self.__retries) + '. Please check with is wrong.\n\nIP: ' + str(
+                                          ip) + '\nPORT: ' + port + '\n\n Thanks')
             time.sleep(5)
             self.__init__(ip, port, mode, num_nodes, sampling_time, self.__max_retries)
 
@@ -61,7 +67,7 @@ class NodeInteractionModule:
 
         self.__socket.close()
 
-    def getdata(self, nodeId):
+    def get_data(self, nodeId):
         mis = []
         result = {}
         tryout = 0
@@ -133,11 +139,21 @@ class NodeInteractionModule:
         print 'Starting Sampling Agent Node ' + str(self.__idConverterLogical(id))
         self.__socket.send(array.array('B', [102, self.__idConverterLogical(id), 0, 32, 0, 1, 0, 1, 0]).tostring())
         time.sleep(1)
-        self.getdata(id)
+        self.get_data(id)
 
     # Convert to WSN node number. Specific to IPv6 solutions. Must change this code to other solutions (e.g. Ginseng)
     def __idConverterLogical(self, id):
         return id + 100
+
+    def get_units(self):
+        return {'adc': 'volt',
+                'par': 'lux',
+                'tsr': 'lux',
+                'temperature': 'C',
+                'humidity': '%',
+                'battery': 'volt',
+                'internal-temperature': 'C'
+                }
 
     def __processElement(self, mis, nodeId):
         global failed
@@ -148,6 +164,8 @@ class NodeInteractionModule:
                     misw = misw[0, :] + 256 * misw[1, :]
                     if misw[1] == 5 and misw[2] == self.__idConverterLogical(nodeId):
                         failed = 0
+                        from pytz import utc
+
                         return {
                             'node': int(misw[2]),
                             'adc0': round(float(misw[5] * 2.5 / 4096), 3),
@@ -163,7 +181,8 @@ class NodeInteractionModule:
                                 float(misw[14] * 405 / 10000) - float(misw[14] * misw[14] * 28 / 10000000 - 4), 1),
                             'battery': round(float(misw[15] * 2.5 / 2048), 3),
                             'internal-temperature': round(float((misw[16] * 2500 / 4096 - 986) * 0.2817), 1),
-                            'timestamp': str(datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+                            'timestamp': str(
+                                datetime.datetime.now().replace(tzinfo=utc).strftime("%Y-%m-%d %H:%M:%S %Z"))
                         }
                     else:
                         failed += 1
