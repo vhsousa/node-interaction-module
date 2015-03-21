@@ -1,11 +1,16 @@
+import os
 import socket
+import threading
 import traceback
 import sys
 # -*- coding: utf-8 -*-
 import array
 import time
 import datetime
+import fcntl
 import numpy
+import thread
+from pytz import utc
 
 __author__ = 'vhsousa'
 
@@ -33,13 +38,15 @@ class NodeInteractionModule:
 
             self.__socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.__socket.connect((self.__connection_data['ip'], int(self.__connection_data['port'])))
+            #fcntl.fcntl(self.__socket, fcntl.F_SETFL, os.O_NONBLOCK)
+
             self.__socket.settimeout(2)
             if mode == 'auto':
                 # TODO: Implement the auto discover settings
                 print 'Must discover nodes and Ts'
             else:
                 print 'Connection as static mode'
-                self.samplingTime = sampling_time
+                self.sampling_time = sampling_time
                 self.num_nodes = num_nodes
 
                 for i in range(1, self.num_nodes + 1):
@@ -67,16 +74,17 @@ class NodeInteractionModule:
 
         self.__socket.close()
 
-    def get_data(self, nodeId):
+    def get_data(self,q):
+
         mis = []
         result = {}
         tryout = 0
+        nread=0
         while self.locked:
             try:
-
                 element = self.__socket.recv(1)
-
                 if element:  # No more elements to read
+                    #print 'In element'
                     tryout = 0
                     value = self.__bytes2int(element)
                     value = int(value)
@@ -84,7 +92,6 @@ class NodeInteractionModule:
                     if value >= 0:
                         mis.append(value)
                     else:
-
                         mis.append(value + 256)
 
                     if mis[0] != 104:
@@ -96,18 +103,26 @@ class NodeInteractionModule:
 
                     # Read enough data for one element, so we have to break
                     if len(mis) >= 34:
-                        result = self.__processElement(mis, nodeId)
+                        aux = self.__processElement(mis)
                         mis = []
-                        if len(result.keys()) > 0:
-                            break
+                        if len(aux.keys()) > 0:
+                            #print aux
+                            #result[aux['node']] = aux
+                            q.put(aux)
+                            nread+=1
+                            if nread>=self.num_nodes:
+                                nread= 0
+                                time.sleep(self.sampling_time)
+
+
                 else:
                     tryout += 1
-                    if tryout > nodeId + 1:
+                    if tryout > self.__max_retries:
                         tryout = 0
                         print 'Lost connection to dispatcher'
                         self.__init__(self.__connection_data['ip'], self.__connection_data['port'], 'static',
                                       self.num_nodes,
-                                      self.samplingTime,
+                                      self.sampling_time,
                                       self.__max_retries)
                         time.sleep(5)
 
@@ -115,7 +130,7 @@ class NodeInteractionModule:
             except Exception, e:
                 print '[Error] Fetching data: ' + str(e)
                 self.__init__(self.__connection_data['ip'], self.__connection_data['port'], 'static', self.num_nodes,
-                              self.samplingTime, self.__max_retries)
+                              self.sampling_time, self.__max_retries)
                 continue
 
         return result
@@ -123,6 +138,17 @@ class NodeInteractionModule:
     def __bytes2int(self, str):
         return int(str.encode('hex'), 16)
 
+    def process(self, queue):
+        node_reads={}
+        while not queue.empty():
+            aux  = queue.get()
+            node_reads[aux['node']] = aux
+        for i in range(1, self.num_nodes+1):
+            if self.__idConverterLogical(i) not in node_reads.keys():
+                self.__startSampling(i)
+                print self.__idConverterLogical(i), 'not in', node_reads.keys()
+                node_reads[self.__idConverterLogical(i)] = self.__nan(i)
+        return node_reads
 
     def __rebootNode(self, id):
         print 'Rebooting Node ' + str(self.__idConverterLogical(id))
@@ -135,15 +161,36 @@ class NodeInteractionModule:
         self.__socket.send(array.array('B', [102, self.__idConverterLogical(id), 0, 34, 0]).tostring())
         time.sleep(1)
 
+    def __nan(self, node_id):
+        return {
+        'node': int(self.__idConverterLogical(node_id)),
+        'adc0': float('nan'),
+        'adc1': float('nan'),
+        'adc2': float('nan'),
+        'adc3': float('nan'),
+        'par': float('nan'),
+        'tsr': float('nan'),
+        'adc6': float('nan'),
+        'adc7': float('nan'),
+        'temperature': float('nan'),
+        'humidity': float('nan'),
+        'internal-temperature': float('nan'),
+        'timestamp': str(
+            datetime.datetime.now().replace(tzinfo=utc).strftime("%Y-%m-%d %H:%M:%S %Z"))
+        }
     def __startSampling(self, id):
         print 'Starting Sampling Agent Node ' + str(self.__idConverterLogical(id))
         self.__socket.send(array.array('B', [102, self.__idConverterLogical(id), 0, 32, 0, 1, 0, 1, 0]).tostring())
         time.sleep(1)
-        self.get_data(id)
+        #self.get_data(id)
 
     # Convert to WSN node number. Specific to IPv6 solutions. Must change this code to other solutions (e.g. Ginseng)
     def __idConverterLogical(self, id):
         return id + 100
+
+    # Convert to WSN node number. Specific to IPv6 solutions. Must change this code to other solutions (e.g. Ginseng)
+    def __idConverterFisical(self, id):
+        return id - 100
 
     def get_units(self):
         return {'adc': 'volt',
@@ -155,16 +202,15 @@ class NodeInteractionModule:
                 'internal-temperature': 'C'
                 }
 
-    def __processElement(self, mis, nodeId):
-        global failed
+    def __processElement(self, mis):
+        from pytz import utc
         try:
             while len(mis) > 10:
                 if mis[0] == 104:  # data message must begin with 104
                     misw = numpy.reshape(mis, (2, len(mis) / 2), order="F")  # message in word format
                     misw = misw[0, :] + 256 * misw[1, :]
-                    if misw[1] == 5 and misw[2] == self.__idConverterLogical(nodeId):
+                    if misw[1] == 5:
                         failed = 0
-                        from pytz import utc
 
                         return {
                             'node': int(misw[2]),
@@ -184,11 +230,7 @@ class NodeInteractionModule:
                             'timestamp': str(
                                 datetime.datetime.now().replace(tzinfo=utc).strftime("%Y-%m-%d %H:%M:%S %Z"))
                         }
-                    else:
-                        failed += 1
-                        if failed >= self.num_nodes * 2:
-                            failed = 0
-                            self.__startSampling(nodeId)
+
 
                 mis = mis[mis[2] + 16:]
         except Exception, e:
